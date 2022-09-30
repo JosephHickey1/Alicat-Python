@@ -9,7 +9,7 @@ with open('README.md', 'r') as in_file:
 
 setup(
     name="Alicat",
-    version="0.1.0-alpha",
+    version="0.1.1-alpha",
     description="Python driver for Alicat mass flow and pressure devices",
     long_description=long_description,
     long_description_content_type='text/markdown',
