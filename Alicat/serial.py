@@ -3,10 +3,18 @@
 
 # These classes form the backbone of Alicat operations through serial commmands
 
+# In[170]:
+
+
 try:
     import serial
 except ImportError:
     print("An error occurred while attempting to import the pyserial backend. Please check your installation and try again.")
+import time
+
+
+# In[171]:
+
 
 class Serial_Connection(object):
     """The serial connection object from which other classes inherit port and baud settings as
@@ -102,6 +110,9 @@ class Serial_Connection(object):
     
 
 
+# In[172]:
+
+
 class MassFlowMeter(Serial_Connection):
     """Base laminar dP mass flow object which contains all functions specific to mass flow devices.
     Initial creation of the object is slow as many characteristics are retrieved and parsed.
@@ -166,8 +177,8 @@ class MassFlowMeter(Serial_Connection):
         outputs = [i.split() for i in self._write(self.ID,'??D*',True)]
         for i in range(len(outputs)):
             outputs[i][1] = outputs[i][1][1:]
-        # Checks firmware version as the format of the format output changed with 7v firmware
-        if isinstance(self.firmware_version, str) or (isinstance(self.firmware_version,int) and self.firmware_version < 6):
+        # Checks firmware version as the format of the format output changed with 6v firmware
+        if isinstance(self.firmware_version, str) or self.firmware_version < 6:
             # For 6v and older format
             self.ranges = {}
             for i in range(2, len(outputs)):
@@ -228,7 +239,7 @@ class MassFlowMeter(Serial_Connection):
     def set_gas(self, gas):
         # Changes gas to the new gas selected taking either the short name or index
         if int(self.gas_ref[gas]) != int(self.gas_ref[self.current_gas]):
-            self._write(self.ID,f'G$${self.gas_ref[gas]}',verbose)
+            self._write(self.ID,f'$$G{self.gas_ref[gas]}',verbose)
             self.current_gas = self.reverse_gas_list[int(self.gas_ref[gas])]
         
         
@@ -253,9 +264,9 @@ class MassFlowMeter(Serial_Connection):
     def tare_press(self):
         # Tares absolute pressure 
         if self.firmware_version == 'GP' or self.firmware_version < 6:
-            self._write(self.ID,'P')
+            self._write(self.ID,'$$P')
         else:
-            self._write(self.ID,'PC')
+            self._write(self.ID,'$$PC')
     
     
     def tare_flow(self):
@@ -293,13 +304,11 @@ class MassFlowMeter(Serial_Connection):
             else:
                 bauds = {2400: 0, 9600: 1, 19200: 2, 38400: 3, 57600: 4, 115200: 5}
                 if newbaud == 57600 or 115200:
-                    reg87 = int(self._write(self.ID,'R87', True)[0].split()[-1]) 
-                    # Change to read_register call when implemented
-                    if not int(bin(reg87)[-2]):
-                        self._write(self.ID,f'W87={2+reg87}')
+                    r87 = int(self._write(self.ID,'$$R87', True)[0].split()[-1]) 
+                    self._write(self.ID,f'$$W87={r87 + 2 - (r87 & 2)}')
                 idval = 256 * ord(self.ID)
-                val = 16 + idval + bauds[newbaud]
-                self._write(self.ID,f'W17={val}')
+                val = 240 + idval + bauds[newbaud]
+                self._write(self.ID,f'$$W17={val}')
             # Replace baud rate property, close old connection, and open a new one
             self.baud = newbaud
             self._close()
@@ -315,8 +324,8 @@ class MassFlowMeter(Serial_Connection):
             # need to add unit checking and unit changing, also check against existing STP values
             temp = (standardtemp + 273.15) * 100000
             press = standardpress * 100000
-            self._write(self.ID, f'W137={temp}')
-            self._write(self.ID, f'W138={press}')
+            self._write(self.ID, f'$$W137={temp}')
+            self._write(self.ID, f'$$W138={press}')
     
     
     def change_ntp(self, normaltemp, normalpress):
@@ -328,8 +337,8 @@ class MassFlowMeter(Serial_Connection):
             # need to add unit checking and unit changing, also check against existing NTP values
             temp = (normaltemp + 273.15) * 100000
             press = normalpress * 100000
-            self._write(self.ID, f'W139={temp}')
-            self._write(self.ID, f'W140={press}')
+            self._write(self.ID, f'$$W139={temp}')
+            self._write(self.ID, f'$$W140={press}')
     
     
     def set_alarm(self, expression: str = ''):
@@ -347,11 +356,14 @@ class MassFlowMeter(Serial_Connection):
             time.sleep(10)
             self._flush()
         else:
-            self.write(self.ID,'W5683=128')
+            self.write(self.ID,'$$W5683=128')
             self.write(self.ID,'Z')
             time.sleep(10)
             self._flush()
         
+
+
+# In[173]:
 
 
 class MassFlowController(MassFlowMeter):
@@ -414,7 +426,12 @@ class MassFlowController(MassFlowMeter):
     def valve_hold(self):
         # Holds the valve at the current position
         self._write(self.ID,'$$H')
-    
+        
+        
+    def valve_hold_closed(self):
+        # Holds the valves closed
+        self._write(self.ID,'$$HC')
+        
     
     def cancel_hold(self):
         # Cancels hold and resumes active control
@@ -432,18 +449,20 @@ class MassFlowController(MassFlowMeter):
             return pid
         
         self._write(self.ID,f'$$W21={P}')
+        time.sleep(1)
         self._write(self.ID,f'$$W22={D}')
+        time.sleep(1)
         self._write(self.ID,f'$$W23={I}')
 
             
-    def pid_loop(self, loop, read = True, verbose = False):
+    def pid_loop(self, loop = 0, read = True, verbose = False):
         # Sets or reads the control loop type of the device
         loops = {0: 'PDF', 1: 'PD2I'}
         
         # Determines where loop type information is stored
         if read:
             addr = 23 if self.firmware_version == 'GP' else 85
-            val = int(self._write(self.ID, '$$R{addr}', True)[0].split()[3])
+            val = int(self._write(self.ID, f'$$R{addr}', True)[0].split()[3])
             if addr == 23 and (val & 1):
                 loop = 1 if (val & 1) else 0
             else:
@@ -469,14 +488,14 @@ class MassFlowController(MassFlowMeter):
                 pass
         # Modern units differentiate between single and dual valve devices
         else:
-            val = int(self._write(self.ID,'R85',True)[0].split()[3])
+            val = int(self._write(self.ID,'$$R85',True)[0].split()[3])
             if loop == ('PDF' or 0):
                 val = 0
             elif loop == ('PDDI' or 'PD2I' or 1):
                 val = 32770 if val > 2 else 2
             else:
                 pass
-            self._write(self.ID,f'W85={val}')
+            self._write(self.ID,f'$$W85={val}')
         
         # Optional print out of the change
         if verbose:
@@ -513,6 +532,356 @@ class MassFlowController(MassFlowMeter):
             return 'This feature is not available for units with firmware earlier than 8v'
         step = step_size * 64000 / self.mfullscale
         self._write(self.ID,f'$$W160={step}')
+        time.sleep(1)
+        self._write(self.ID,f'$$W161={timedelta}')
+
+        
+    def set_autotare(self, delay):
+        # Sets the power-up and auto tare time delay. A value of zero disables them.
+        r18 = int(self._write(self.ID,'$$R18',True)[0].split()[3])
+        old = r18 & 255
+        new = r18 - old + delay
+        self._write(self.ID,f'$$W18={new}')
+        r19 = int(self._write(self.ID,'$$R19',True)[0].split()[3])
+        r20 = int(self._write(self.ID,'$$R20',True)[0].split()[3])
+        old = r19 & 255
+        
+        # Auto Tare is enabled/disabled through register 20 but configured through 19
+        if delay > 0:
+            self._write(self.ID,f'$$W20={r20 + 8192 - (r20 & 8192)}')
+            time.sleep(1)
+            new = r19 - old + delay
+            self._write(self.ID,f'$$W19={new}')
+        else:
+            self._write(self.ID,f'$$W20{r20 - (r20 & 8192)}')
+            
+
+    def powerup_setpoint(self, setpoint):
+        # Enables a power-up setpoint for the device
+        
+        # Temporarily enable EEPROM saving
+        r18 = int(self._write(self.ID,'$$R18',True)[0].split()[3]) + 32768
+        self._write(self.ID,f'$$W18={r18}')
+        time.sleep(1)
+        
+        # Write new setpoint to save in EEPROM
+        self.set_setpoint(setpoint)
+        time.sleep(1)
+        
+        # Disable saving with new setpoint stored
+        r18 -= 32768
+        self._write(self.ID,f'$$W18={r18}')
+        
+
+    def setpoint_limits(self, minimum, maximum):
+        # Limit the acceptable setpoints the controller will use
+        if (isinstance(self.firmware_version,str) or self.firmware_version < 8):
+            return 'This feature is not available for units with firmware earlier than 8v'
+        
+        # Convert and write minimum and maximum values as device counts
+        if minimum:
+            self._write(self.ID,f'$$W169={minimum * 64000 / self.fullscale}')
+            time.sleep(1)
+        if maximum:
+            self._write(self.ID,f'$$W170={maximum * 64000 / self.fullscale}')
+
+    def flow_limit(self, limit):
+        # Sets a limit to the flow rate while in pressure control mode
+        # If controlling on pressure and totalizing flow, this should be set <= self.mfullscale
+        if (isinstance(self.firmware_version,str) or self.firmware_version < 8):
+            return 'This feature is not available for units with firmware earlier than 8v'
+        self._write(self.ID,f'$$W165={limit * 64000 / self.mfullscale}')
+        
+        
+    def control_deadband(self, deadband):
+        # Set a custom deadband in device units which the control algortihm considers
+        # the reading and setpoint to be equivalent. Used for increased system stability.
+        self._write(self.ID,f'$$W58={deadband * 64000 / self.fullscale}')
+        
+
+    def overpressure_limit(self, limit):
+        # Set a limit in device units for pressure which upon reaching, the valve will close
+        # Send a new setpoint command to resume active control
+        self._write(Self.ID,f'$$W73{limit * 64000 / self.pfullscale}')
+
+
+# In[174]:
+
+
+class PressureMeter(Serial_Connection):
+    """Base pressure object which contains all functions specific to pressure devices.
+    Initial creation of the object is slow as many characteristics are retrieved and parsed.
+    Future versions may allow the passing of a config file to initialize settings."""
+    
+    def __init__(self, ID :str ='A', port : str ='/dev/ttyUSB0', baud : int =19200):
+        # Initialize a serial connection for commuication with the device
+        super().__init__(port, baud)
+        self.ID, self.port, self.baud = ID, port, baud
+        
+        # Gather device information and specific formatting for data
+        self._fetch_firmware_version()
+        self._data_format()
+        
+    
+    def _fetch_firmware_version(self):
+        # Query manufacturer data saving only the firmwar version
+        self.manufacturer_data = [i.split() for i in self._write(self.ID, '??M*',True)]
+        self.firmware_version = self.manufacturer_data[-1][-1]
+        
+        # Early firmware version would present the version with a capitalized 'V' between major and minor version
+        self.firmware_version, self.firmware_minor = self.firmware_version.replace('V','v').split('v',1)
+        self.firmware_version = int(self.firmware_version)
+        
+        
+    def _data_format(self):
+        """Uses serial command for querying the format of general poll dataframe and parses the
+        output based on firmware version to get a list of parameters being sent over serial and
+        a readable list of parameter name and units"""
+        self.data = []
+        # Reads in format data for parsing
+        outputs = [i.split() for i in self._write(self.ID,'??D*',True)]
+        for i in range(len(outputs)):
+            outputs[i][1] = outputs[i][1][1:]
+        # Checks firmware version as the format of the format output changed with 6v firmware
+        if self.firmware_version < 6:
+            # For 6v and older format
+            self.ranges = {}
+            for i in range(2, len(outputs)):
+                c = outputs[i]
+                if c[-1] == 'na' or c[-1] == '_':
+                    del c[-1]
+                # Appends parameter ID, Parameter Name, and Parameter Units for each parameter
+                self.data.append([int(c[1]), c[2], c[-1]])
+                self.ranges[c[2].lower()] = c[-2]
+        
+        else:
+            # for 6v and newer format
+            output2 = []
+            for i in range(len(outputs)):
+                c = outputs[i]
+                # Convert all to integers that can be and pass the error for non-numerics
+                for i in range(len(c)):
+                    try:
+                        c[i] = int(c[i])
+                    except ValueError:
+                        pass
+                # Create screen to catch and contatenate split parameter names
+                seq = 0
+                for i in range(len(c)):
+                    if isinstance(c[i],str) and c[i] != 's' and c[i] != 'string' and c[i] != 'decimal':
+                        seq += 1
+                        if seq > 1:
+                            c[i-seq+1] += ' ' + c[i]
+                    else:
+                        seq = 0
+                # Add the reformated and concatenated list to the outputs
+                output2.append(c)
+            # Take only the Parameter ID, Parameter Name, and Parameter Units for each parameter
+            for i in range(2, len(output2)):
+                self.data.append([output2[i][2], output2[i][3], output2[i][-1]])
+        # Delete temporary arrays
+            del output2
+        del outputs
+        # Generate keys for the `get` command
+        self.keys = [self.data[i][1] for i in range(len(self.data))]
+    
+    
+    def _print_dataframe(self,iterations=1):
+        # Prints a number of lines of data from the device. Data is in the same order as self.data
+        dataframe = []
+        for i in range(iterations):
+            dataframe.append(self._write(self.ID,'',True))
+        return dataframe
+        
+        
+    def get(self):
+        # Returns a dictionary of current values bound to their parameter name
+        data = self._write(self.ID,'',True)[0].split()[1:]
+        values = {k: v for k,v in zip(self.keys, data)}
+        return values
+        
+
+    def lock(self):
+        # Locks the front display from making settings changes
+        self._write(self.ID,'$$L')
+        
+        
+    def unlock(self):
+        # Unlocks front display
+        self._write(self.ID,'$$U')
+    
+    
+    def tare_press(self):
+        # Tares absolute pressure 
+        self._write(self.ID,'$$P')
+    
+    
+    def change_id(self, newid: str):
+        # Changes ASCII alphabetical unit ID
+        if newid.upper() != self.ID:
+            val = 256 * ord(newid.upper())
+            reg = int(self._write(self.ID,'$$R17',True)[0].split()[-1])
+            reg += val - (256 * ord(self.ID.upper()))
+            self._write(self.ID,f'$$W17={reg}')
+            self.ID = newid.upper()
+    
+    
+    def change_baud(self, newbaud: int):
+        # Changes baud rate and reinstantiates the serial connection with the new baud rate
+        if newbaud != self.baud:
+            bauds = {2400: 0, 9600: 1, 19200: 2, 38400: 3, 57600: 4, 115200: 5}
+            if newbaud == 57600 or 115200:
+                r87 = int(self._write(self.ID,'$$R87', True)[0].split()[-1]) 
+                # Change to read_register call when implemented
+                self._write(self.ID,f'$$W87={r87 + 2 - (r87 & 2)}')
+                time.sleep(1)
+            idval = 256 * ord(self.ID)
+            self._write(self.ID,f'W17={idval + bauds[newbaud] + 240}')
+            # Replace baud rate property, close old connection, and open a new one
+            self.baud = newbaud
+            self._close()
+            super().__init__(self.port, self.baud)
+            
+    
+    def set_alarm(self, expression: str = ''):
+        # Sets a new alarm using the set and clear expressions in RPN
+        # Configuration info can be found at: https://www.alicat.com/using-your-alicat/alarm-function-ale-command-tutorial/
+        self._write(self.ID,f' ALE {expression}')
+    
+    
+    def factory_restore(self):
+        # Restores device to factory settings
+        if self.firmware_version >= 7:
+            self._write(self.ID,' FACTORY RESTORE ALL')
+            time.sleep(2)
+            self._flush()
+        else:
+            self.write(self.ID,'$$W5683=128')
+            self.write(self.ID,'Z')
+            time.sleep(2)
+            self._flush()
+        
+
+
+# In[175]:
+
+
+class PressureController(PressureMeter):
+    """Controller class which extends the functionality of the MassFlowMeter class with options for control
+    loop tuning, setpoint ramping, and control variable switching. Initialization is still slow due to the
+    parent class initialization."""
+    
+    def __init__(self, ID :str ='A', port : str ='/dev/ttyUSB0', baud : int =19200):
+        # Configure the device for scripted control and gathers further data about the device
+        # Future release may include config file loading to accelerate this step
+        super().__init__(ID, port, baud)
+        self.ID, self.port, self.baud = ID, port, baud
+        self._flush()
+        
+        # Full scale calculations may be moved to the MassFlowMeter class since it is a shared property
+        self.fullscale = self._get_fullscale('Dif Press')
+        if self.fullscale == 0:
+            self.fullscale = self._get_fullscale('Ga Press')
+        if self.fullscale == 0:
+            self.fullscale = self._get_fullscale('Abs Press')
+        
+        # Disables EEPROM saving of setpoints for safety
+        r18 = int(self._write(self.ID,'$$R18',True)[0].split()[3])
+        if r18 & 32768:
+            r18 -= 32768
+            self._write(self.ID,f'$$W18={r18}')
+        
+        
+    def set_setpoint(self, setpoint: float = 0):
+        # Takes a setpoint in floating point value and commands device with it
+        # GP devices only accepted integer counts of fullscale so a conversion is done
+        self._write(self.ID, f'S{setpoint}')
+        self._flush()
+        
+    
+    def _get_fullscale(self, statistic):
+        # Determines fullscale of each statistic in current engineering units
+        # May be moved due to shared properties with MassFlowMeter
+        if self.firmware_version < 6:
+            return float(self.ranges[statistic])
+        else:
+            params = {'Abs Press': 2, 'Ga Press': 6, 'Dif Press': 7}
+            response = self._write(self.ID, f'FPF {params[statistic]}', True)
+            return float(response[0].split()[1])
+    
+
+    def valve_hold_closed(self):
+        # Holds the valves closed
+        self._write(self.ID,'$$HC')
+        
+        
+    def valve_hold(self):
+        # Holds the valves at the current position
+        self._write(self.ID,'$$HP')
+        
+        
+    def valve_exhaust(self):
+        # Holds exhaust valve open and closes inlet valve
+        self._write(self.ID,'$$E')
+        
+    
+    def cancel_hold(self):
+        # Cancels hold and resumes active control
+        self._write(self.ID,'$$C')
+    
+    
+    def pid(self, P=0, I=0, D=0, read=True):
+        # Sets or returns PID gains
+        if read:
+            pid = {}
+            pid['P'] = int(self._write(self.ID,'$$R21',True)[0].split()[3])
+            pid['D'] = int(self._write(self.ID,'$$R22',True)[0].split()[3])
+            pid['I'] = int(self._write(self.ID,'$$R23',True)[0].split()[3])
+            pid['Loop'] = self.pid_loop(read=True)
+            return pid
+        
+        self._write(self.ID,f'$$W21={P}')
+        time.sleep(1)
+        self._write(self.ID,f'$$W22={D}')
+        time.sleep(1)
+        self._write(self.ID,f'$$W23={I}')
+
+            
+    def pid_loop(self, loop = 0, read = False, verbose = False):
+        # Sets or reads the control loop type of the device
+        loops = {0: 'PDF', 1: 'PD2I'}
+        
+        # Reads out the loop type
+        if read:
+            val = int(self._write(self.ID, '$$R85', True)[0].split()[3])
+            loop = 0 if (val == 0 or val == 1) else 1
+            return loops[loop]
+        
+        # Loop information stored in register 85
+        val = int(self._write(self.ID,'R85',True)[0].split()[3])
+        if loop == ('PDF' or 0):
+            val = 0
+            self.current_loop = 'PDF'
+        elif loop == ('PDDI' or 'PD2I' or 1):
+            val = 32770 if val > 2 else 2
+            self.current_loop = 'PDDI'
+        else:
+            pass
+        self._write(self.ID,f'W85={val}')
+        
+        # Optional print out of the change
+        if verbose:
+            print(f'The control loop has been set to {loops[self.current_loop]}')
+        
+    
+    def setpoint_ramp(self, step_size=0, timedelta=0):
+        # Creates a limit to the setpoint increase as a function of time allowing
+        # slower adjustments outside of the PID domain
+        if isinstance(self.firmware_version,str) or self.firmware_version < 8:
+            return 'This feature is not available for units with firmware earlier than 8v'
+        step = step_size * 64000 / self.mfullscale
+        self._write(self.ID,f'$$W160={step}')
+        time.sleep(1)
         self._write(self.ID,f'$$W161={timedelta}')
 
         
@@ -541,13 +910,17 @@ class MassFlowController(MassFlowMeter):
         # Temporarily enable EEPROM saving
         r18 = int(self._write(self.ID,'$$R18',True)[0].split()[3]) + 32768
         self._write(self.ID,f'$$W18={r18}')
+        self._flush()
+        time.sleep(1)
         
         # Write new setpoint to save in EEPROM
         self.set_setpoint(setpoint)
+        time.sleep(1)
         
         # Disable saving with new setpoint stored
-        r18 -= 32768
+        r18 = r18 - 32768
         self._write(self.ID,f'$$W18={r18}')
+        self._flush()
         
 
     def setpoint_limits(self, minimum, maximum):
@@ -558,25 +931,7 @@ class MassFlowController(MassFlowMeter):
         # Convert and write minimum and maximum values as device counts
         if minimum:
             self._write(self.ID,f'W169={minimum * 64000 / self.fullscale}')
+            time.sleep(1)
         if maximum:
             self._write(self.ID,f'W170={maximum * 64000 / self.fullscale}')
-
-    def flow_limit(self, limit):
-        # Sets a limit to the flow rate while in pressure control mode
-        # If controlling on pressure and totalizing flow, this should be set <= self.mfullscale
-        if (isinstance(self.firmware_version,str) or self.firmware_version < 8):
-            return 'This feature is not available for units with firmware earlier than 8v'
-        self._write(self.ID,f'W165={limit * 64000 / self.mfullscale}')
-        
-        
-    def control_deadband(self, deadband):
-        # Set a custom deadband in device units which the control algortihm considers
-        # the reading and setpoint to be equivalent. Used for increased system stability.
-        self._write(self.ID,f'$$W58={deadband * 64000 / self.fullscale}')
-        
-
-    def overpressure_limit(self, limit):
-        # Set a limit in device units for pressure which upon reaching, the valve will close
-        # Send a new setpoint command to resume active control
-        self._write(Self.ID,f'$$W73{limit * 64000 / self.pfullscale}')
 
