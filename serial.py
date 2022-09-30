@@ -3,18 +3,10 @@
 
 # These classes form the backbone of Alicat operations through serial commmands
 
-# In[ ]:
-
-
 try:
     import serial
 except ImportError:
     print("An error occurred while attempting to import the pyserial backend. Please check your installation and try again.")
-import time
-
-
-# In[ ]:
-
 
 class Serial_Connection(object):
     """The serial connection object from which other classes inherit port and baud settings as
@@ -108,9 +100,6 @@ class Serial_Connection(object):
         else:
             self._flush()
     
-
-
-# In[ ]:
 
 
 class MassFlowMeter(Serial_Connection):
@@ -363,9 +352,6 @@ class MassFlowMeter(Serial_Connection):
             time.sleep(10)
             self._flush()
         
-
-
-# In[ ]:
 
 
 class MassFlowController(MassFlowMeter):
