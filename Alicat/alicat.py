@@ -128,12 +128,31 @@ class MassFlowMeter(Serial_Connection):
         self._fetch_firmware_version()
         self._data_format()
         self.current_gas = self._write(self.ID,'',True)[-1].split()[-1]
+        self.gas_changes = 0
+        self.setpoint_changes = 0
+
         
-        # Disable EEPROM gas selection saving as a safety precaution
+    def _eeprom_saving(self, read: bool = False, setting = 'setpoint', state: bool = False):
+        # Enables or diables EEPROM saving for setpoint
         r18 = int(self._write(self.ID,'$$R18',True)[0].split()[3])
-        if not (r18 & 2048):
-            r18 += 2048
-            self._write(self.ID,f'$$W18={r18}')
+        if read:
+            self.ram_only_setpoint = 0 if (r18 & 32768) else 1
+            self.ram_only_gas = 1 if (r18 & 2048) else 0
+            return
+        
+        if setting == 'setpoint':
+            if not state and (r18 & 32768):
+                r18 -= 32768
+            elif state and not (r18 & 32768):
+                r18 += 32768
+        elif setting == 'gas':
+            if state and (r18 & 2048):
+                r18 -= 2048
+            elif not state and not (r18 & 2048):
+                r18 +=2048
+        
+        self._write(self.ID,f'$$W=18{r18}')
+        self._eeprom_saving(read=True)
         
     
     def _fetch_gas_list(self):
@@ -241,6 +260,9 @@ class MassFlowMeter(Serial_Connection):
         if int(self.gas_ref[gas]) != int(self.gas_ref[self.current_gas]):
             self._write(self.ID,f'$$G{self.gas_ref[gas]}',verbose)
             self.current_gas = self.reverse_gas_list[int(self.gas_ref[gas])]
+            self.gas_changes += 1
+            if self.gas_changes > 10000 and not ram_only_gas:
+                self._eeprom_saving(setting='gas',state=False)
         
         
     def create_mix(self, gases: list, percentages: list):
@@ -384,13 +406,6 @@ class MassFlowController(MassFlowMeter):
         self.variables = {1024: 'mass', 768: 'volumetric', 256: 'pressure'}
         self.change_control_var('mass')
         
-        # Disables EEPROM saving of setpoints for safety
-        r18 = int(self._write(self.ID,'$$R18',True)[0].split()[3])
-        if r18 & 32768:
-            r18 -= 32768
-            self._write(self.ID,f'$$W18={r18}')
-        
-        
         
     def set_setpoint(self, setpoint: float = 0):
         # Takes a setpoint in floating point value and commands device with it
@@ -401,6 +416,8 @@ class MassFlowController(MassFlowMeter):
         else:
             self._write(self.ID, f'S{setpoint}')
         self.setpoint = setpoint
+        self.setpoint_changes > 100000 and not self.ram_only_setpoint:
+            self.eeprom_saving(setting='setpoint',state=False)
     
     
     def _get_fullscale(self, statistic = 'mass'):
@@ -777,7 +794,8 @@ class PressureController(PressureMeter):
         super().__init__(ID, port, baud)
         self.ID, self.port, self.baud = ID, port, baud
         self._flush()
-        
+        self.setpoint_changes = 0
+        self._eeprom_saving(read=True)
         # Full scale calculations may be moved to the MassFlowMeter class since it is a shared property
         self.fullscale = self._get_fullscale('Dif Press')
         if self.fullscale == 0:
@@ -785,11 +803,21 @@ class PressureController(PressureMeter):
         if self.fullscale == 0:
             self.fullscale = self._get_fullscale('Abs Press')
         
-        # Disables EEPROM saving of setpoints for safety
+        
+    def _eeprom_saving(self, read: bool = False, state: bool = False):
+        # Enables or diables EEPROM saving for setpoint
         r18 = int(self._write(self.ID,'$$R18',True)[0].split()[3])
-        if r18 & 32768:
+        if read:
+            self.ram_only_setpoint = 0 if (r18 & 32768) else 1
+            return
+        
+        if not state and (r18 & 32768):
             r18 -= 32768
-            self._write(self.ID,f'$$W18={r18}')
+        elif state and not (r18 & 32768):
+            r18 += 32768
+        
+        self._write(self.ID,f'$$W=18{r18}')
+        self._eeprom_saving(read=True)
         
         
     def set_setpoint(self, setpoint: float = 0):
@@ -797,6 +825,9 @@ class PressureController(PressureMeter):
         # GP devices only accepted integer counts of fullscale so a conversion is done
         self._write(self.ID, f'S{setpoint}')
         self._flush()
+        self.setpoint_changes += 1
+        if self.setpoint_changes > 100000 and not self.ram_only_setpoint:
+            self._eeprom_saving()
         
     
     def _get_fullscale(self, statistic):
