@@ -130,6 +130,13 @@ class MassFlowMeter(Serial_Connection):
         self.current_gas = self._write(self.ID,'',True)[-1].split()[-1]
         self.gas_changes = 0
         self.setpoint_changes = 0
+        self._eeprom_saving(read=True)
+        
+        # Stores full scale range of device measurements
+        self.mfullscale = self._get_fullscale('mass')
+        self.pfullscale = self._get_fullscale('pressure')
+        self.vfullscale = self._get_fullscale('volumetric')
+        self.scales = {'mass': self.mfullscale, 'volumetric': self.vfullscale, 'volume': self.vfullscale,                        'pressure': self.pfullscale}
 
         
     def _eeprom_saving(self, read: bool = False, setting = 'setpoint', state: bool = False):
@@ -238,6 +245,17 @@ class MassFlowMeter(Serial_Connection):
         del outputs
         # Generate keys for the `get` command
         self.keys = [self.data[i][1] for i in range(len(self.data))]
+    
+    
+    def _get_fullscale(self, statistic = 'mass'):
+        # Determines fullscale of each statistic in current engineering units
+        # May be moved due to shared properties with MassFlowMeter
+        exch = {'mass' : 5, 'volumetric': 4, 'pressure': 2}
+        if isinstance(self.firmware_version, str) or self.firmware_version < 6:
+            return float(self.ranges[statistic])
+        else:
+            response = self._write(self.ID, f'FPF {exch[statistic]}', True)
+            return float(response[0].split()[1])
     
     
     def _print_dataframe(self,iterations=1):
@@ -398,11 +416,6 @@ class MassFlowController(MassFlowMeter):
         # Future release may include config file loading to accelerate this step
         super().__init__(ID, port, baud)
         self.ID, self.port, self.baud = ID, port, baud
-        # Full scale calculations may be moved to the MassFlowMeter class since it is a shared property
-        self.mfullscale = self._get_fullscale('mass')
-        self.pfullscale = self._get_fullscale('pressure')
-        self.vfullscale = self._get_fullscale('volumetric')
-        self.scales = {'mass': self.mfullscale, 'volumetric': self.vfullscale, 'volume': self.vfullscale,                        'pressure': self.pfullscale}
         self.variables = {1024: 'mass', 768: 'volumetric', 256: 'pressure'}
         self.change_control_var('mass')
         
@@ -418,17 +431,6 @@ class MassFlowController(MassFlowMeter):
         self.setpoint = setpoint
         self.setpoint_changes > 100000 and not self.ram_only_setpoint:
             self.eeprom_saving(setting='setpoint',state=False)
-    
-    
-    def _get_fullscale(self, statistic = 'mass'):
-        # Determines fullscale of each statistic in current engineering units
-        # May be moved due to shared properties with MassFlowMeter
-        exch = {'mass' : 5, 'volumetric': 4, 'pressure': 2}
-        if isinstance(self.firmware_version, str) or self.firmware_version < 6:
-            return float(self.ranges[statistic])
-        else:
-            response = self._write(self.ID, f'FPF {exch[statistic]}', True)
-            return float(response[0].split()[1])
     
     
     def set_batch(self, batchsize):
@@ -639,6 +641,13 @@ class PressureMeter(Serial_Connection):
         self._fetch_firmware_version()
         self._data_format()
         
+        # Stores full scale range of the pressure statistic this device works with
+        self.fullscale = self._get_fullscale('Dif Press')
+        if self.fullscale == 0:
+            self.fullscale = self._get_fullscale('Ga Press')
+        if self.fullscale == 0:
+            self.fullscale = self._get_fullscale('Abs Press')
+        
     
     def _fetch_firmware_version(self):
         # Query manufacturer data saving only the firmwar version
@@ -702,6 +711,16 @@ class PressureMeter(Serial_Connection):
         # Generate keys for the `get` command
         self.keys = [self.data[i][1] for i in range(len(self.data))]
     
+    
+    def _get_fullscale(self, statistic):
+        # Determines fullscale of each statistic in current engineering units
+        if self.firmware_version < 6:
+            return float(self.ranges[statistic])
+        else:
+            params = {'Abs Press': 2, 'Ga Press': 6, 'Dif Press': 7}
+            response = self._write(self.ID, f'FPF {params[statistic]}', True)
+            return float(response[0].split()[1])
+        
     
     def _print_dataframe(self,iterations=1):
         # Prints a number of lines of data from the device. Data is in the same order as self.data
@@ -796,12 +815,6 @@ class PressureController(PressureMeter):
         self._flush()
         self.setpoint_changes = 0
         self._eeprom_saving(read=True)
-        # Full scale calculations may be moved to the MassFlowMeter class since it is a shared property
-        self.fullscale = self._get_fullscale('Dif Press')
-        if self.fullscale == 0:
-            self.fullscale = self._get_fullscale('Ga Press')
-        if self.fullscale == 0:
-            self.fullscale = self._get_fullscale('Abs Press')
         
         
     def _eeprom_saving(self, read: bool = False, state: bool = False):
@@ -828,17 +841,6 @@ class PressureController(PressureMeter):
         self.setpoint_changes += 1
         if self.setpoint_changes > 100000 and not self.ram_only_setpoint:
             self._eeprom_saving()
-        
-    
-    def _get_fullscale(self, statistic):
-        # Determines fullscale of each statistic in current engineering units
-        # May be moved due to shared properties with MassFlowMeter
-        if self.firmware_version < 6:
-            return float(self.ranges[statistic])
-        else:
-            params = {'Abs Press': 2, 'Ga Press': 6, 'Dif Press': 7}
-            response = self._write(self.ID, f'FPF {params[statistic]}', True)
-            return float(response[0].split()[1])
     
 
     def valve_hold_closed(self):
