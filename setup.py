@@ -16,7 +16,7 @@ setup(
     url="https://github.com/JosephHickey1/Alicat-Python",
     author="Joseph Hickey",
     packages=["Alicat"],
-    install_requires=["pyserial"],
+    install_requires=["pyserial","pickle"],
     entry_points={
         "console_scripts": [("Alicat = Alicat:run")]
     },

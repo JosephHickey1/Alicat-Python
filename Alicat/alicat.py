@@ -3,17 +3,16 @@
 
 # These classes form the backbone of Alicat operations through serial commmands
 
-# In[170]:
+# In[1]:
 
 
-try:
-    import serial
-except ImportError:
-    print("An error occurred while attempting to import the pyserial backend. Please check your installation and try again.")
+import serial
+import pickle
 import time
+import os
 
 
-# In[171]:
+# In[2]:
 
 
 class Serial_Connection(object):
@@ -110,7 +109,7 @@ class Serial_Connection(object):
     
 
 
-# In[172]:
+# In[3]:
 
 
 class MassFlowMeter(Serial_Connection):
@@ -118,33 +117,47 @@ class MassFlowMeter(Serial_Connection):
     Initial creation of the object is slow as many characteristics are retrieved and parsed.
     Future versions may allow the passing of a config file to initialize settings."""
     
-    def __init__(self, ID :str ='A', port : str ='/dev/ttyUSB0', baud : int =19200):
+    def __init__(self, ID :str ='A', port : str ='/dev/ttyUSB0', baud : int =19200, config = None):
         # Initialize a serial connection for commuication with the device
         super().__init__(port, baud)
         self.ID, self.port, self.baud = ID, port, baud
-        
-        # Gather device information and specific formatting for data
-        self._fetch_gas_list()
-        self._fetch_firmware_version()
-        self._data_format()
-        self.current_gas = self._write(self.ID,'',True)[-1].split()[-1]
-        self.gas_changes = 0
-        self.setpoint_changes = 0
-        self._eeprom_saving(read=True)
-        
-        # Stores full scale range of device measurements
-        self.mfullscale = self._get_fullscale('mass')
-        self.pfullscale = self._get_fullscale('pressure')
-        self.vfullscale = self._get_fullscale('volumetric')
-        self.scales = {'mass': self.mfullscale, 'volumetric': self.vfullscale, 'volume': self.vfullscale,                        'pressure': self.pfullscale}
+        self.variables = {}
+        if config:
+            curdir = os.getcwd()
+            os.chdir(os.path.abspath('deviceconfigs'))
+            with open(config, 'rb') as f:
+                self.variables = pickle.loads(f.read())
+            os.chdir(curdir)
+            
+            self.firmware_version, self.firmware_minor = self.variables['firmware_version'], self.variables['firmware_minor']
+            
+        else:
+            # Gather device information and specific formatting for data
+            self._fetch_gas_list()
+            self._fetch_device_data()
+            self._data_format()
+            self.variables['current_gas'] = self._write(self.ID,'',True)[-1].split()[-1]
+            self.variables['gas_changes'] = 0
+            self.variables['setpoint_changes'] = 0
+            self._eeprom_saving(read=True)
+
+            # Stores full scale range of device measurements
+            self.variables['mfullscale'] = self._get_fullscale('mass')
+            self.variables['pfullscale'] = self._get_fullscale('pressure')
+            self.variables['vfullscale'] = self._get_fullscale('volumetric')
+            self.variables['scales'] = {'mass': self.variables['mfullscale'], 'volumetric': self.variables['vfullscale'],                                                   'volume': self.variables['vfullscale'], 'pressure': self.variables['pfullscale']}
 
         
+    def __str__(self):
+        return self.variables['serialnum']
+    
+    
     def _eeprom_saving(self, read: bool = False, setting = 'setpoint', state: bool = False):
         # Enables or diables EEPROM saving for setpoint
         r18 = int(self._write(self.ID,'$$R18',True)[0].split()[3])
         if read:
-            self.ram_only_setpoint = 0 if (r18 & 32768) else 1
-            self.ram_only_gas = 1 if (r18 & 2048) else 0
+            self.variables['ram_only_setpoint'] = 0 if (r18 & 32768) else 1
+            self.variables['ram_only_gas'] = 1 if (r18 & 2048) else 0
             return
         
         if setting == 'setpoint':
@@ -164,41 +177,44 @@ class MassFlowMeter(Serial_Connection):
     
     def _fetch_gas_list(self):
         # Empty dictionaries to store gas and index information
-        self.gas_list = {}
-        self.gas_ref = {}
-        self.reverse_gas_list = {}
+        self.variables['gas_list'] = {}
+        self.variables['gas_ref'] = {}
+        self.variables['reverse_gas_list'] = {}
         
         # Query gas table for index and short name
         gases = [i.split() for i in self._write(self.ID, '??G*',True)]
         
         # Save gas data in dictionaries
         for i in range(len(gases)):
-            self.gas_list[gases[i][2]] = int(gases[i][1][1:])
-            self.gas_ref[int(gases[i][1][1:])] = int(gases[i][1][1:])
-            self.reverse_gas_list[int(gases[i][1][1:])] = gases[i][2]
-            self.gas_ref.update(self.gas_list)
+            self.variables['gas_list'][gases[i][2]] = int(gases[i][1][1:])
+            self.variables['gas_ref'][int(gases[i][1][1:])] = int(gases[i][1][1:])
+            self.variables['reverse_gas_list'][int(gases[i][1][1:])] = gases[i][2]
+            self.variables['gas_ref'].update(self.variables['gas_list'])
         del gases
         
     
-    def _fetch_firmware_version(self):
-        # Query manufacturer data saving only the firmwar version
-        self.manufacturer_data = [i.split() for i in self._write(self.ID, '??M*',True)]
-        self.firmware_version = self.manufacturer_data[-1][-1]
+    def _fetch_device_data(self):
+        # Query manufacturer data saving only the firmware version
+        manufacturer_data = [i.split() for i in self._write(self.ID, '??M*',True)]
+        self.variables['serialnum'] = manufacturer_data[5][-1]
+        self.variables['firmware_version'] = manufacturer_data[-1][-1]
+        self.firmware_version = self.variables['firmware_version']
         
         # Early firmware version would present the version with a capitalized 'V' between major and minor version
-        if self.firmware_version[:2] != 'GP':
-            self.firmware_version, self.firmware_minor = self.firmware_version.replace('V','v').split('v',1)
-            self.firmware_version = int(self.firmware_version)
+        if self.variables['firmware_version'][:2] != 'GP':
+            self.variables['firmware_version'], self.variables['firmware_minor'] = self.variables['firmware_version'].replace('V','v').split('v',1)
+            self.variables['firmware_version'] = int(self.variables['firmware_version'])
         else:
             # Safe to assume all GP units still functioning were of the 07 release
-            self.firmware_version, self.firmware_minor = 'GP', '07'
-        
+            self.variables['firmware_version'], self.variables['firmware_minor'] = 'GP', '07'
+            
+        self.firmware_version, self.firmware_minor = self.variables['firmware_version'], self.variables['firmware_minor']
         
     def _data_format(self):
         """Uses serial command for querying the format of general poll dataframe and parses the
         output based on firmware version to get a list of parameters being sent over serial and
         a readable list of parameter name and units"""
-        self.data = []
+        self.variables['data'] = []
         # Reads in format data for parsing
         outputs = [i.split() for i in self._write(self.ID,'??D*',True)]
         for i in range(len(outputs)):
@@ -206,14 +222,14 @@ class MassFlowMeter(Serial_Connection):
         # Checks firmware version as the format of the format output changed with 6v firmware
         if isinstance(self.firmware_version, str) or self.firmware_version < 6:
             # For 6v and older format
-            self.ranges = {}
+            self.variables['ranges'] = {}
             for i in range(2, len(outputs)):
                 c = outputs[i]
                 if c[-1] == 'na' or c[-1] == '_':
                     del c[-1]
                 # Appends parameter ID, Parameter Name, and Parameter Units for each parameter
-                self.data.append([int(c[1]), c[2], c[-1]])
-                self.ranges[c[2].lower()] = c[-2]
+                self.variables['data'].append([int(c[1]), c[2], c[-1]])
+                self.variables['ranges'][c[2].lower()] = c[-2]
         
         else:
             # for 7v and newer format
@@ -239,12 +255,12 @@ class MassFlowMeter(Serial_Connection):
                 output2.append(c)
             # Take only the Parameter ID, Parameter Name, and Parameter Units for each parameter
             for i in range(2, len(output2)):
-                self.data.append([output2[i][2], output2[i][3], output2[i][-1]])
+                self.variables['data'].append([output2[i][2], output2[i][3], output2[i][-1]])
         # Delete temporary arrays
             del output2
         del outputs
         # Generate keys for the `get` command
-        self.keys = [self.data[i][1] for i in range(len(self.data))]
+        self.variables['keys'] = [self.variables['data'][i][1] for i in range(len(self.variables['data']))]
     
     
     def _get_fullscale(self, statistic = 'mass'):
@@ -252,7 +268,7 @@ class MassFlowMeter(Serial_Connection):
         # May be moved due to shared properties with MassFlowMeter
         exch = {'mass' : 5, 'volumetric': 4, 'pressure': 2}
         if isinstance(self.firmware_version, str) or self.firmware_version < 6:
-            return float(self.ranges[statistic])
+            return float(self.variables['ranges'][statistic])
         else:
             response = self._write(self.ID, f'FPF {exch[statistic]}', True)
             return float(response[0].split()[1])
@@ -269,17 +285,18 @@ class MassFlowMeter(Serial_Connection):
     def get(self):
         # Returns a dictionary of current values bound to their parameter name
         data = self._write(self.ID,'',True)[0].split()[1:]
-        values = {k: v for k,v in zip(self.keys, data)}
+        values = {k: v for k,v in zip(self.variables['keys'], data)}
         return values
         
         
     def set_gas(self, gas):
         # Changes gas to the new gas selected taking either the short name or index
-        if int(self.gas_ref[gas]) != int(self.gas_ref[self.current_gas]):
-            self._write(self.ID,f'$$G{self.gas_ref[gas]}',verbose)
-            self.current_gas = self.reverse_gas_list[int(self.gas_ref[gas])]
-            self.gas_changes += 1
-            if self.gas_changes > 10000 and not ram_only_gas:
+        if int(self.variables['gas_ref'][gas]) != int(self.variables['gas_ref'][self.variables['current_gas']]):
+            var = self.variables['gas_ref'][gas]
+            self._write(self.ID, f'$$G{var}')
+            self.variables['current_gas'] = self.variables['reverse_gas_list'][int(self.variables['gas_ref'][gas])]
+            self.variables['gas_changes'] += 1
+            if self.variables['gas_changes'] > 10000 and not self.variables['ram_only_gas']:
                 self._eeprom_saving(setting='gas',state=False)
         
         
@@ -403,7 +420,7 @@ class MassFlowMeter(Serial_Connection):
         
 
 
-# In[173]:
+# In[4]:
 
 
 class MassFlowController(MassFlowMeter):
@@ -411,25 +428,24 @@ class MassFlowController(MassFlowMeter):
     loop tuning, setpoint ramping, and control variable switching. Initialization is still slow due to the
     parent class initialization."""
     
-    def __init__(self, ID :str ='A', port : str ='/dev/ttyUSB0', baud : int =19200):
+    def __init__(self, ID :str ='A', port : str ='/dev/ttyUSB0', baud : int =19200, config = None):
         # Configure the device for scripted control and gathers further data about the device
         # Future release may include config file loading to accelerate this step
-        super().__init__(ID, port, baud)
-        self.ID, self.port, self.baud = ID, port, baud
-        self.variables = {1024: 'mass', 768: 'volumetric', 256: 'pressure'}
-        self.change_control_var('mass')
+        super().__init__(ID, port, baud, config)
+        self.change_control_var(read=True)
         
         
     def set_setpoint(self, setpoint: float = 0):
         # Takes a setpoint in floating point value and commands device with it
         # GP devices only accepted integer counts of fullscale so a conversion is done
         if self.firmware_version == 'GP' or self.firmware_version < 6:
-            setpoint = str(int(64000 * setpoint // self.fullscale))
+            setpoint = str(int(64000 * setpoint // (self.variables['fullscale'])))
             self._write(self.ID, setpoint)
         else:
             self._write(self.ID, f'S{setpoint}')
-        self.setpoint = setpoint
-        self.setpoint_changes > 100000 and not self.ram_only_setpoint:
+        self.variables['setpoint'] = setpoint
+        self.variables['setpoint_changes'] += 1
+        if self.variables['setpoint_changes'] > 100000 and not self.variables['ram_only_setpoint']:
             self.eeprom_saving(setting='setpoint',state=False)
     
     
@@ -491,18 +507,18 @@ class MassFlowController(MassFlowMeter):
         # GP units used the least significant bit to determine loop type 
         if self.firmware_version == 'GP':
             val = int(self._write(self.ID, '$$R23', True)[0].split()[3])
-            self.current_loop = 1 if val & 1 else 0
+            self.variables['current_loop'] = 1 if val & 1 else 0
             if read:
-                print(f'The current control loop is set to {self.loops[loop]}')
+                print(f'The current control loop is set to {loops[loop]}')
 
-            if loop == 'PDF' and self.current_loop != 0:
+            if loop == 'PDF' and self.variables['current_loop'] != 0:
                 val -= 1
                 self._write(self.ID,f'$$W23={val}')
-                self.current_loop = 0
-            elif (loop == 'PDDI' or loop == 'PD2I') and self.current_loop != 1:
+                self.variables['current_loop'] = 0
+            elif (loop == 'PDDI' or loop == 'PD2I') and self.variables['current_loop'] != 1:
                 val += 1
                 self._write(self.ID,f'$$W23={val}')
-                self.current_loop = 1
+                self.variables['current_loop'] = 1
             else:
                 pass
         # Modern units differentiate between single and dual valve devices
@@ -518,10 +534,10 @@ class MassFlowController(MassFlowMeter):
         
         # Optional print out of the change
         if verbose:
-            print(f'The control loop has been set to {loops[self.current_loop]}')
+            print(f'The control loop has been set to {loops[loop]}')
         
     
-    def change_control_var(self, variable = 'mass'):
+    def change_control_var(self, variable = 'mass', read=False):
         # Changes the parameter for the setpoint and for feeding into the control loop
         # Changing the parameter may necessitate new PID tuning terms 
         reg = int(self._write(self.ID,'$$R20', True)[0].split()[3].lstrip())
@@ -535,13 +551,18 @@ class MassFlowController(MassFlowMeter):
         else:
             var = 256
         
+        if read:
+            self.variables['control_variable'] = loop[variable]
+            self.variables['fullscale'] = self.variables['scales'][variable]
+            return
+        
         if var != loop[variable]:
             reg = reg - var + loop[variable]
             self._write(self.ID,f'$$W20={reg}')
         
         # Changes loop variable property and which fullscale is used
-        self.control_variable = loop[variable]
-        self.fullscale = self.scales[variable]
+        self.variables['control_variable'] = loop[variable]
+        self.variables['fullscale'] = self.variables['scales'][variable]
     
     
     def setpoint_ramp(self, step_size=0, timedelta=0):
@@ -549,7 +570,7 @@ class MassFlowController(MassFlowMeter):
         # slower adjustments outside of the PID domain
         if isinstance(self.firmware_version,str) or self.firmware_version < 8:
             return 'This feature is not available for units with firmware earlier than 8v'
-        step = step_size * 64000 / self.mfullscale
+        step = step_size * 64000 // self.variables['mfullscale']
         self._write(self.ID,f'$$W160={step}')
         time.sleep(1)
         self._write(self.ID,f'$$W161={timedelta}')
@@ -578,11 +599,14 @@ class MassFlowController(MassFlowMeter):
     def powerup_setpoint(self, setpoint):
         # Enables a power-up setpoint for the device
         
-        # Temporarily enable EEPROM saving
-        r18 = int(self._write(self.ID,'$$R18',True)[0].split()[3]) + 32768
-        self._write(self.ID,f'$$W18={r18}')
-        time.sleep(1)
+        r18 = int(self._write(self.ID,'$$R18',True)[0].split()[3])
         
+        if self.variables['ram_only_setpoint']:
+            # Temporarily enable EEPROM saving
+            r18 += 32768
+            self._write(self.ID,f'$$W18={r18}')
+            time.sleep(1)
+
         # Write new setpoint to save in EEPROM
         self.set_setpoint(setpoint)
         time.sleep(1)
@@ -609,7 +633,8 @@ class MassFlowController(MassFlowMeter):
         # If controlling on pressure and totalizing flow, this should be set <= self.mfullscale
         if (isinstance(self.firmware_version,str) or self.firmware_version < 8):
             return 'This feature is not available for units with firmware earlier than 8v'
-        self._write(self.ID,f'$$W165={limit * 64000 / self.mfullscale}')
+        mfullscale = self.variables['mfullscale']
+        self._write(self.ID,f'$$W165={limit * 64000 / mfullscale}')
         
         
     def control_deadband(self, deadband):
@@ -621,10 +646,11 @@ class MassFlowController(MassFlowMeter):
     def overpressure_limit(self, limit):
         # Set a limit in device units for pressure which upon reaching, the valve will close
         # Send a new setpoint command to resume active control
-        self._write(Self.ID,f'$$W73{limit * 64000 / self.pfullscale}')
+        pfullscale = self.variables['pfullscale']
+        self._write(Self.ID,f'$$W73{limit * 64000 / pfullscale}')
 
 
-# In[174]:
+# In[5]:
 
 
 class PressureMeter(Serial_Connection):
@@ -632,38 +658,55 @@ class PressureMeter(Serial_Connection):
     Initial creation of the object is slow as many characteristics are retrieved and parsed.
     Future versions may allow the passing of a config file to initialize settings."""
     
-    def __init__(self, ID :str ='A', port : str ='/dev/ttyUSB0', baud : int =19200):
+    def __init__(self, ID :str ='A', port : str ='/dev/ttyUSB0', baud : int =19200, config = None):
         # Initialize a serial connection for commuication with the device
         super().__init__(port, baud)
         self.ID, self.port, self.baud = ID, port, baud
+        self.variables = {}
         
-        # Gather device information and specific formatting for data
-        self._fetch_firmware_version()
-        self._data_format()
+        if config:
+            curdir = os.getcwd()
+            os.chdir(os.path.abspath('deviceconfigs'))
+            with open(config, 'rb') as f:
+                self.variables = pickle.loads(f.read())
+            os.chdir(curdir)
+            
+            self.firmware_version, self.firmware_minor = self.variables['firmware_version'], self.variables['firmware_minor']
+            
+        else:
+            # Gather device information and specific formatting for data
+            self._fetch_device_data()
+            self._data_format()
+
+            # Stores full scale range of the pressure statistic this device works with
+            fullscale = self._get_fullscale('Dif Press')
+            if fullscale == 0:
+                fullscale = self._get_fullscale('Ga Press')
+            if fullscale == 0:
+                fullscale = self._get_fullscale('Abs Press')
+            self.variables['fullscale'] = fullscale
+
         
-        # Stores full scale range of the pressure statistic this device works with
-        self.fullscale = self._get_fullscale('Dif Press')
-        if self.fullscale == 0:
-            self.fullscale = self._get_fullscale('Ga Press')
-        if self.fullscale == 0:
-            self.fullscale = self._get_fullscale('Abs Press')
-        
+    def __str__(self):
+        return self.variables['serialnum']
     
-    def _fetch_firmware_version(self):
-        # Query manufacturer data saving only the firmwar version
-        self.manufacturer_data = [i.split() for i in self._write(self.ID, '??M*',True)]
-        self.firmware_version = self.manufacturer_data[-1][-1]
+    
+    def _fetch_device_data(self):
+        # Query manufacturer data saving only the firmware version
+        manufacturer_data = [i.split() for i in self._write(self.ID, '??M*',True)]
+        self.variables['serialnum'] = manufacturer_data[5][-1]
+        firmware_version = manufacturer_data[-1][-1]
         
         # Early firmware version would present the version with a capitalized 'V' between major and minor version
-        self.firmware_version, self.firmware_minor = self.firmware_version.replace('V','v').split('v',1)
-        self.firmware_version = int(self.firmware_version)
-        
+        self.variables['firmware_version'], self.variables['firmware_minor'] = firmware_version.replace('V','v').split('v',1)
+        self.variables['firmware_version'] = int(self.variables['firmware_version'])
+        self.firmware_version = self.variables['firmware_version']
         
     def _data_format(self):
         """Uses serial command for querying the format of general poll dataframe and parses the
         output based on firmware version to get a list of parameters being sent over serial and
         a readable list of parameter name and units"""
-        self.data = []
+        self.variables['data'] = []
         # Reads in format data for parsing
         outputs = [i.split() for i in self._write(self.ID,'??D*',True)]
         for i in range(len(outputs)):
@@ -677,8 +720,8 @@ class PressureMeter(Serial_Connection):
                 if c[-1] == 'na' or c[-1] == '_':
                     del c[-1]
                 # Appends parameter ID, Parameter Name, and Parameter Units for each parameter
-                self.data.append([int(c[1]), c[2], c[-1]])
-                self.ranges[c[2].lower()] = c[-2]
+                self.variables['data'].append([int(c[1]), c[2], c[-1]])
+                self.variables['ranges'][c[2].lower()] = c[-2]
         
         else:
             # for 6v and newer format
@@ -704,18 +747,18 @@ class PressureMeter(Serial_Connection):
                 output2.append(c)
             # Take only the Parameter ID, Parameter Name, and Parameter Units for each parameter
             for i in range(2, len(output2)):
-                self.data.append([output2[i][2], output2[i][3], output2[i][-1]])
+                self.variables['data'].append([output2[i][2], output2[i][3], output2[i][-1]])
         # Delete temporary arrays
             del output2
         del outputs
         # Generate keys for the `get` command
-        self.keys = [self.data[i][1] for i in range(len(self.data))]
+        self.variables['keys'] = [self.variables['data'][i][1] for i in range(len(self.variables['data']))]
     
     
     def _get_fullscale(self, statistic):
         # Determines fullscale of each statistic in current engineering units
         if self.firmware_version < 6:
-            return float(self.ranges[statistic])
+            return float(self.variables['ranges'][statistic])
         else:
             params = {'Abs Press': 2, 'Ga Press': 6, 'Dif Press': 7}
             response = self._write(self.ID, f'FPF {params[statistic]}', True)
@@ -733,7 +776,7 @@ class PressureMeter(Serial_Connection):
     def get(self):
         # Returns a dictionary of current values bound to their parameter name
         data = self._write(self.ID,'',True)[0].split()[1:]
-        values = {k: v for k,v in zip(self.keys, data)}
+        values = {k: v for k,v in zip(self.variables['keys'], data)}
         return values
         
 
@@ -799,7 +842,7 @@ class PressureMeter(Serial_Connection):
         
 
 
-# In[175]:
+# In[6]:
 
 
 class PressureController(PressureMeter):
@@ -807,21 +850,20 @@ class PressureController(PressureMeter):
     loop tuning, setpoint ramping, and control variable switching. Initialization is still slow due to the
     parent class initialization."""
     
-    def __init__(self, ID :str ='A', port : str ='/dev/ttyUSB0', baud : int =19200):
+    def __init__(self, ID :str ='A', port : str ='/dev/ttyUSB0', baud : int =19200, config = None):
         # Configure the device for scripted control and gathers further data about the device
         # Future release may include config file loading to accelerate this step
-        super().__init__(ID, port, baud)
-        self.ID, self.port, self.baud = ID, port, baud
-        self._flush()
-        self.setpoint_changes = 0
-        self._eeprom_saving(read=True)
+        super().__init__(ID, port, baud, config)
+        if not config:
+            self.variables['setpoint_changes'] = 0
         
         
     def _eeprom_saving(self, read: bool = False, state: bool = False):
         # Enables or diables EEPROM saving for setpoint
         r18 = int(self._write(self.ID,'$$R18',True)[0].split()[3])
+        
         if read:
-            self.ram_only_setpoint = 0 if (r18 & 32768) else 1
+            self.variables['ram_only_setpoint'] = 0 if (r18 & 32768) else 1
             return
         
         if not state and (r18 & 32768):
@@ -838,8 +880,8 @@ class PressureController(PressureMeter):
         # GP devices only accepted integer counts of fullscale so a conversion is done
         self._write(self.ID, f'S{setpoint}')
         self._flush()
-        self.setpoint_changes += 1
-        if self.setpoint_changes > 100000 and not self.ram_only_setpoint:
+        self.variables['setpoint_changes'] += 1
+        if self.variables['setpoint_changes'] > 100000 and not self.variables['ram_only_setpoint']:
             self._eeprom_saving()
     
 
@@ -894,17 +936,17 @@ class PressureController(PressureMeter):
         val = int(self._write(self.ID,'R85',True)[0].split()[3])
         if loop == ('PDF' or 0):
             val = 0
-            self.current_loop = 'PDF'
+            self.variables['current_loop'] = 'PDF'
         elif loop == ('PDDI' or 'PD2I' or 1):
             val = 32770 if val > 2 else 2
-            self.current_loop = 'PDDI'
+            self.variables['current_loop'] = 'PDDI'
         else:
             pass
         self._write(self.ID,f'W85={val}')
         
         # Optional print out of the change
         if verbose:
-            print(f'The control loop has been set to {loops[self.current_loop]}')
+            print(f'The control loop has been set to {loops[loop]}')
         
     
     def setpoint_ramp(self, step_size=0, timedelta=0):
@@ -912,7 +954,7 @@ class PressureController(PressureMeter):
         # slower adjustments outside of the PID domain
         if isinstance(self.firmware_version,str) or self.firmware_version < 8:
             return 'This feature is not available for units with firmware earlier than 8v'
-        step = step_size * 64000 / self.mfullscale
+        step = step_size * 64000 // self.variables['fullscale']
         self._write(self.ID,f'$$W160={step}')
         time.sleep(1)
         self._write(self.ID,f'$$W161={timedelta}')
@@ -940,11 +982,14 @@ class PressureController(PressureMeter):
     def powerup_setpoint(self, setpoint):
         # Enables a power-up setpoint for the device
         
-        # Temporarily enable EEPROM saving
-        r18 = int(self._write(self.ID,'$$R18',True)[0].split()[3]) + 32768
-        self._write(self.ID,f'$$W18={r18}')
-        self._flush()
-        time.sleep(1)
+        r18 = int(self._write(self.ID,'$$R18',True)[0].split()[3])
+        
+        if self.variables['ram_only_setpoint']:
+            # Temporarily enable EEPROM saving
+            r18 += 32768
+            self._write(self.ID,f'$$W18={r18}')
+            self._flush()
+            time.sleep(1)
         
         # Write new setpoint to save in EEPROM
         self.set_setpoint(setpoint)
@@ -960,11 +1005,39 @@ class PressureController(PressureMeter):
         # Limit the acceptable setpoints the controller will use
         if (isinstance(self.firmware_version,str) or self.firmware_version < 8):
             return 'This feature is not available for units with firmware earlier than 8v'
-        
+        fullscale = variables['fullscale']
         # Convert and write minimum and maximum values as device counts
         if minimum:
-            self._write(self.ID,f'W169={minimum * 64000 / self.fullscale}')
+            self._write(self.ID,f'W169={minimum * 64000 / fullscale}')
             time.sleep(1)
         if maximum:
-            self._write(self.ID,f'W170={maximum * 64000 / self.fullscale}')
+            self._write(self.ID,f'W170={maximum * 64000 / fullscale}')
+
+
+# In[7]:
+
+
+def config_generator(device, filename: str = None, path: str = None):
+    
+    import os
+    
+    absolute_path = os.path.abspath('')
+    relative_path = 'deviceconfigs'
+    path = os.path.join(absolute_path, relative_path)
+        
+    if not os.path.isdir('deviceconfigs'):
+        os.mkdir(path)
+    
+    
+    if not filename:
+        filename = str(device) + '_config.txt'
+    
+    
+    cur_path = os.getcwd()
+    os.chdir(path)
+    
+    with open(filename,'wb') as f:
+        pickle.dump(device.variables, f)
+    
+    os.chdir(cur_path)
 
