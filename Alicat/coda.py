@@ -13,18 +13,18 @@ import minimalmodbus
 
 
 class CODA(minimalmodbus.Instrument):
-    
-    open_ports = {}
+    """
+    Extension of minimalmodbus https://pypi.org/project/MinimalModbus/
+    which allows for scripting and direct control of Alicat CODA units
+    """
     
     def __init__(self, port: str = '/dev/ttyUSB0', baud: int = 19200, address: int = 1):
         
         minimalmodbus.Instrument.__init__(self, port, address)
         self.serial.baudrate = baud
         self.serial.timeout = 0.25
+        self.port = port
         
-    @property
-    def port(self):
-        return self.port
         
     @property
     def baud(self):
@@ -50,21 +50,38 @@ class CODA(minimalmodbus.Instrument):
     def total_mass(self):
         return self.read_float(1210)
     
+    
     @property
     def setpoint(self):
         return self.read_float(1212)
     
+    @setpoint.setter
+    def setpoint(self, setpoint: float):
+        if self.read_status() == 'taring':
+            raise Warning('Device is currently taring, do not start flow')
+        self.write_float(1011, float(setpoint))
+        
+        
     @property
     def total_time(self):
         return self.read_float(1214)
+    
     
     @property
     def percent_setpoint(self):
         return self.read_float(2048)
     
+    @percent_setpoint.setter
+    def percent_setpoint(self, setpoint: float):
+        if self.read_status() == 'taring':
+            raise Warning('Device is currently taring, do not start flow')
+        self.write_float(1009, float(setpoint))
+    
+    
     @property
     def modbus_ID(self):
         return self.read_register(2052)
+    
     
     @property
     def vol_overrange(self):
@@ -82,6 +99,7 @@ class CODA(minimalmodbus.Instrument):
     def total_overrange(self):
         return self.read_register(2057)
     
+    
     def status(self):
         return self.read_long(1200)
     
@@ -96,86 +114,84 @@ class CODA(minimalmodbus.Instrument):
         else:
             return 'no flags'
     
+    
     @property
     def sefa_gain(self):
         return self.read_float(1109)
+    
+    @sefa_gain.setter
+    def sefa_gain(self, gain: float):
+        self.write_float(1109, gain)
+    
     
     @property
     def p_gain(self):
         return self.read_float(1119)
     
+    @p_gain.setter
+    def p_gain(self, gain: float):
+        self.write_float(1119, gain)
+    
+    
     @property
     def i_gain(self):
         return self.read_float(1121)
+    
+    @i_gain.setter
+    def i_gain(self, gain: float):
+        self.write_float(1121, gain)
+    
     
     @property
     def d_gain(self):
         return self.read_float(1123)
     
+    @d_gain.setter
+    def d_gain(self, gain: float):
+        self.write_float(1123, gain)
+    
+    
     @property
     def valve_offset(self):
         return self.read_float(1125)
+    
+    @valve_offset.setter
+    def valve_offset(self, offset: float):
+        self.write_float(1125, offset)
+    
     
     @property
     def fullscale(self):
         return self.read_float(1107)
     
     
-    # Beginning of writeable registers
+    @property
+    def dataframe(self):
+        return [self.modbus_ID, self.density, self.temperature,                 self.volume_flow, self.mass_flow, self.setpoint,                 self.total_mass, self.total_time]
+    
     
     def command_result(self):
         c, arg = self.read_registers(999, 2)
         if arg:
             if arg == 32769:
-                print(f'{c} is not a valid command ID')
+                raise Exception(f'{c} is not a valid command ID')
             elif arg == 32770:
-                print('This setting is not valid')
+                raise Exception('This setting is not valid')
             else:
-                print('The requested feature is not supported on this device')
+                raise Exception('The requested feature is not supported on this device')
         return
     
     def command(self, ID: int, arg: int):
         self.write_registers(999,[ID, arg])
         self.command_result()
     
-    @setpoint.setter
-    def setpoint(self, setpoint: float):
-        self.write_float(1011, float(setpoint))
-    
-    @percent_setpoint.setter
-    def percent_setpoint(self, setpoint: float):
-        self.write_float(1009, float(setpoint))
-        
-    @sefa_gain.setter
-    def sefa_gain(self, gain: float):
-        self.write_float(1109, gain)
-    
-    @p_gain.setter
-    def p_gain(self, gain: float):
-        self.write_float(1119, gain)
-        
-    @i_gain.setter
-    def i_gain(self, gain: float):
-        self.write_float(1121, gain)
-        
-    @d_gain.setter
-    def d_gain(self, gain: float):
-        self.write_float(1123, gain)
-    
-    @valve_offset.setter
-    def valve_offset(self, offset: float):
-        self.write_float(1125, offset)
     
     def tare_flow(self):
         self.command(4,1)
-        while True:
-            time.sleep(1)
-            if self.read_status() != 'taring':
-                return
             
-        
     def abort_tare(self):
         self.command(4,0)
+        
         
     def reset_totalizer(self):
         self.command(5,0)
@@ -186,23 +202,28 @@ class CODA(minimalmodbus.Instrument):
     def resume_totalizer(self):
         self.command(15,1)
         
+        
     def control_mass(self):
         self.command(11,0)
         
     def control_volume(self):
         self.command(11,1)
     
+    
     def powerup_setpoint(self, setpoint: float):
         self.setpoint = setpoint
     
+    
     def save_pid_gains(self):
         self.command(17,1)
+        
         
     def digital_setpoint(self):
         self.command(18,0)
     
     def analog_setpoint(self):
         self.command(18,1)
+    
     
     def valve_hold(self, state: str):
         states = {
@@ -211,6 +232,7 @@ class CODA(minimalmodbus.Instrument):
             'open': 2
         }
         self.command(16, states[state])
+        
         
     def power_lost(self):
         self.serial.close()
